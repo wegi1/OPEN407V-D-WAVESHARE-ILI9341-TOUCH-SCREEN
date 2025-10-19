@@ -18,11 +18,12 @@
 
 
 
-extern SPI_HandleTypeDef hspi2;
-void MX_SPI2_Init(void);
+
+
 
 /* Private variables ---------------------------------------------------------*/
 //Matrix matrix ;
+
 Matrix  matrix = {
 		0x00000104,
 		0xFFFE2816,
@@ -32,6 +33,7 @@ Matrix  matrix = {
 		0xFFCD2856 ,
 		0x00052E46
 };
+
 Coordinate  display ;
 
 
@@ -45,25 +47,105 @@ Coordinate DisplaySample[3] = {
 
 /* Private define ------------------------------------------------------------*/
 #define THRESHOLD 2
-#define TP_hspi hspi2
-
-
 
 /*******************************************************************************
-* Function Name  : DelayUS
-* Description    : 
+* Function Name  : Delay500ns
+* Description    :
 * Input          : - cnt:
 * Output         : None
 * Return         : None
 * Attention      : None
 *******************************************************************************/
-void DelayUS(uint32_t cnt)
+void DelayUS(uint16_t value)
 {
-  uint32_t i;
-  i = cnt * 4;
-  while(i--);
-}
 
+	TIM4->SR = 0;
+	TIM4->CNT = 0;
+	TIM4->ARR = value;
+	TIM4->SR = 0;
+	TIM4->CR1 = 1;
+	while((TIM4->SR &1) == 0 ) {;} // wait for event flag
+	TIM4->CR1 = 0;
+}
+#define HARDWARE_SPI // if Hardware SPI exists - change definition to "HARDWARE_SPI"
+
+#ifdef HARDWARE_SPI
+extern SPI_HandleTypeDef hspi2;
+
+#define TP_hspi hspi2
+
+#else
+//=========================================================================================================================
+// definitions for software SPI
+//=========================================================================================================================
+
+#define SPI_CLK_L()		HAL_GPIO_WritePin(LCDTP_CLK_GPIO_Port, LCDTP_CLK_Pin, GPIO_PIN_RESET)
+#define SPI_CLK_H()		HAL_GPIO_WritePin(LCDTP_CLK_GPIO_Port, LCDTP_CLK_Pin, GPIO_PIN_SET)
+#define SPI_MOSI_L()	HAL_GPIO_WritePin(LCDTP_DIN_GPIO_Port, LCDTP_DIN_Pin, GPIO_PIN_RESET)
+#define SPI_MOSI_H()	HAL_GPIO_WritePin(LCDTP_DIN_GPIO_Port, LCDTP_DIN_Pin, GPIO_PIN_SET)
+#define SPI_MISO()		HAL_GPIO_ReadPin(LCDTP_DOUT_GPIO_Port, LCDTP_DOUT_Pin)
+
+//================================================================================================================================
+static void spi_write_byte(uint8_t data)
+{
+	for(size_t i = 0; i < 8; i++)
+	{
+		if (data & 0x80)
+		{
+			SPI_MOSI_H();
+		}
+		else
+		{
+			SPI_MOSI_L();
+		}
+		data = data << 1;
+		SPI_CLK_L();
+		__NOP();
+		__NOP();
+		__NOP();
+		__NOP();
+		__NOP();
+		__NOP();
+		__NOP();
+		__NOP();
+		__NOP();
+		__NOP();
+		__NOP();
+		__NOP();
+		__NOP();
+		SPI_CLK_H();
+		__NOP();
+		__NOP();
+		__NOP();
+		__NOP();
+		__NOP();
+		__NOP();
+		__NOP();
+		__NOP();
+		__NOP();
+	}
+}
+//============================================================
+static uint16_t spi_read_13bits(void)
+{
+	uint8_t i,  value;
+	uint16_t result = 0;
+	i = 13;
+
+	for(i=13; i>0; i--)
+	{
+		result = result << 1;
+		SPI_CLK_L();
+		DelayUS(1);
+		value = SPI_MISO();
+		if (value != 0) { result |= 1;  }
+		SPI_CLK_H();
+
+	}
+	return result;
+}
+#endif
+//=========================================================================================
 
 /*******************************************************************************
 * Function Name  : WR_CMD
@@ -75,7 +157,11 @@ void DelayUS(uint32_t cnt)
 *******************************************************************************/
 static void WR_CMD (uint8_t cmd)  
 { 
+#ifdef HARDWARE_SPI
   HAL_SPI_Transmit(&TP_hspi,&cmd,1,1000);
+#else
+	spi_write_byte(cmd);
+#endif
 } 
 
 
@@ -90,11 +176,15 @@ static void WR_CMD (uint8_t cmd)
 *******************************************************************************/
 static int RD_AD(void)  
 { 
-  uint8_t buf[2];
-  int value;
-  HAL_SPI_Receive(&TP_hspi,buf,2,1000);
-  value = (uint16_t)((buf[0] << 8) + buf[1]) >> 3;
-  return value;
+#ifdef HARDWARE_SPI
+	  uint8_t buf[2];
+	  int value;
+	  HAL_SPI_Receive(&TP_hspi,buf,2,1000);
+	  value = (uint16_t)((buf[0] << 8) + buf[1]) >> 3;
+	  return value;
+#else
+  return (int) spi_read_13bits();  // read spi analog data
+#endif
 } 
 
 
@@ -189,10 +279,20 @@ void DrawCross(uint16_t Xpos,uint16_t Ypos)
 Coordinate *Read_Ads7846(void)
 {
   static Coordinate  screen;
+  static uint8_t t4_init = 0;
   int m0,m1,m2,TP_X[1],TP_Y[1],temp[3];
   uint8_t count=0;
   int buffer[2][9]={{0},{0}};
   
+  if(t4_init == 0) {
+	  t4_init = 1;
+	  RCC->APB1ENR |= RCC_APB1ENR_TIM4EN;
+	  __DSB();
+	  TIM4->CR1 = 0;
+	  TIM4->PSC = 167;
+	  TIM4->ARR = 0xFFFF;
+  }
+
   do
   {       
     TP_GetAdXY(TP_X,TP_Y);  
@@ -346,22 +446,19 @@ FunctionalState getDisplayPoint(Coordinate * displayPtr,
 } 
 
 //***********************************************************************************************
-#if 0
+
 static void print_data( int32_t data) {
 
-	  lcdSetTextColor(0xffff, 0);
-	  lcdSetTextFont(&Font24);
-
-	  LCD_ClrScr(COLOR_565_BLACK);
+ 	  LCD_ClrScr(COLOR_565_BLACK);
 
 	  my_htoa32(idx , data);
 
 	  lcdSetCursor(20, 100);
 	  lcdPrintf((char *) idx);
-	  HAL_Delay(555);
+	  HAL_Delay(222);
 	  while((HAL_GPIO_ReadPin(LCDTP_IRQ_GPIO_Port, LCDTP_IRQ_Pin)) == 1);
 }
-#endif
+
 //***************************************************************************************************
 /*******************************************************************************
 * Function Name  : TouchPanel_Calibrate
@@ -396,10 +493,7 @@ void TouchPanel_Calibrate(void)
 	  lcdPrintf("        Touch crosshair to calibrate");
 	  lcdSetTextFont(&Font24);
 	  lcdSetCursor(0,95);
-	  lcdPrintf("   Waveshare LCD");
-
-	  lcdSetCursor(0,140);
-	  lcdPrintf("  ILI9341 VERSION");
+	  lcdPrintf("   ILI9341 LCD");
 	  HAL_Delay(20);
 	  DrawCross(DisplaySample[i].x,DisplaySample[i].y);
 	  test = 0;
@@ -438,16 +532,33 @@ void TouchPanel_Calibrate(void)
 //===================================================================================================
 //===================================================================================================
 
-#if 0
-  print_data(matrix.An)  ;
-  print_data(matrix.Bn)  ;
-  print_data(matrix.Cn)  ;
-  print_data(matrix.Dn)  ;
-  print_data(matrix.En)  ;
-  print_data(matrix.Fn)  ;
-  print_data(matrix.Divider)  ;
-  LCD_ClrScr(COLOR_565_BLACK);
-#endif
+  if(HAL_GPIO_ReadPin(LCDTP_IRQ_GPIO_Port, LCDTP_IRQ_Pin) == 0) { // IF TOUCH IS PRESSED THAN SHOW MATRIX VALUES
+	  lcdSetTextColor(0xffff, 0);
+	  lcdSetTextFont(&Font24);
+
+	  LCD_ClrScr(COLOR_565_BLACK);
+
+	  lcdSetCursor(20, 50);
+	  lcdPrintf("MATRIX ADDRESS:");
+
+	  lcdSetCursor(20, 100);
+	  my_htoa32(idx , (u32) &matrix);
+	  lcdPrintf((char *) idx);
+	  while(HAL_GPIO_ReadPin(LCDTP_IRQ_GPIO_Port, LCDTP_IRQ_Pin) == 0) {;} // wait for releasse touch screen
+	  HAL_Delay(200);
+	  while((HAL_GPIO_ReadPin(LCDTP_IRQ_GPIO_Port, LCDTP_IRQ_Pin)) == 1);
+
+
+	  print_data(matrix.An)  ;
+	  print_data(matrix.Bn)  ;
+	  print_data(matrix.Cn)  ;
+	  print_data(matrix.Dn)  ;
+	  print_data(matrix.En)  ;
+	  print_data(matrix.Fn)  ;
+	  print_data(matrix.Divider)  ;
+	  LCD_ClrScr(COLOR_565_BLACK);
+  }
+
 
 //===================================================================================================
 //===================================================================================================

@@ -69,7 +69,7 @@ extern Coordinate  display ;
 
 /* Private function prototypes -----------------------------------------------*/        
 
-Coordinate *Read_Ads7846(void);
+Coordinate* Read_Ads7846(void);
 void TouchPanel_Calibrate(void);
 void DrawCross(uint16_t Xpos, uint16_t Ypos);
 
